@@ -1,0 +1,4 @@
+fastmcp 
+hyperliquid-python-sdk 
+python-dotenv 
+eth-account
