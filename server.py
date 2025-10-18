@@ -69,6 +69,7 @@ mcp = FastMCP(
     instructions="Provides read-only market data and authorized trading tools for HyperLiquid DEX."
 )
 
+#--- Get details from the users's provided wallet ---
 @mcp.tool()
 async def get_user_state() -> Dict[str, Any]:
     """
@@ -82,6 +83,7 @@ async def get_user_state() -> Dict[str, Any]:
     state = hl_info.user_state(user_address)
     return state
 
+#--- Get the current mid price of the coin input.
 @mcp.tool()
 async def get_mid_price(coin: str) -> float:
     """
@@ -113,6 +115,126 @@ async def get_mid_price(coin: str) -> float:
     except (ValueError, TypeError) as e:
         print(f"WARNING: Could not convert price '{price_str}' to float for {coin_symbol}. Error: {e}", file=sys.stderr)
         return -2.0 # Indicates a conversion failure
+
+# --- Get the L2 Order Book Depth (WORKAROUND using all_mids) ---
+@mcp.tool()
+async def get_order_book(coin: str) -> Dict[str, Any]:
+    """
+    [WORKAROUND] Retrieves the current price from the all_mids endpoint 
+    as a simplified order book representation. Use this if the full L2 method fails.
+    Args: coin (str): The asset symbol (e.g., 'BTC', 'ETH').
+    """
+    try:
+        mids_dict = hl_info.all_mids()
+        coin_symbol = coin.upper()
+        price_str = mids_dict.get(coin_symbol)
+        
+        if price_str is None:
+            return {"error": f"Coin {coin_symbol} not found in current market data."}
+        
+        price = float(price_str)
+        
+        # Create a simplified 'L2' response using the mid-price
+        return {
+            "coin": coin_symbol,
+            "mid_price": price,
+            "bids": [{"price": price * 0.9999, "size": 1.0}], # Fake bid slightly below price
+            "asks": [{"price": price * 1.0001, "size": 1.0}], # Fake ask slightly above price
+            "note": "⚠️ Data is simplified. Full L2 depth is unavailable in this SDK version or client.",
+        }
+    except Exception as e:
+        print(f"ERROR in fallback order book: {e}", file=sys.stderr)
+        return {"error": f"Failed to retrieve price data for {coin}: {str(e)}"}# Pydantic model for order input is optional here but highly recommended for clear tool schema
+from pydantic import BaseModel, Field
+from typing import Literal
+
+class MarketOrderInput(BaseModel):
+    """Defines input parameters for placing a market order."""
+    coin: str = Field(..., description="The asset symbol to trade (e.g., 'BTC', 'ETH').")
+    is_buy: bool = Field(..., description="True for a BUY order (go long/reduce short), False for a SELL order (go short/reduce long).")
+    size: float = Field(..., gt=0, description="The size of the order, must be greater than zero.")
+    reduce_only: bool = Field(False, description="Set to True to ensure the order only reduces an existing position.")
+
+
+# --- Place a Market Order ---
+@mcp.tool()
+async def place_market_order(order: MarketOrderInput) -> Dict[str, Any]:
+    """
+    Executes an immediate market order to buy or sell a specified size of an asset.
+    This tool requires a valid private key for transaction signing.
+    """
+    if not is_key_valid or not hl_exchange:
+        return {"error": "Trading is disabled. Private key is invalid or Exchange client failed to initialize."}
+
+    try:
+        # Get the market price for the order type
+        mid_price = await get_mid_price(order.coin)
+        if mid_price <= 0:
+            return {"error": "Could not retrieve valid market price to use for the order."}
+            
+        # Place the order using the Exchange client
+        result = hl_exchange.order(
+            coin=order.coin.upper(),
+            is_buy=order.is_buy,
+            sz=order.size,
+            # For market orders, limit_px is set far from the mid price to guarantee a fill
+            limit_px=mid_price * (1.05 if order.is_buy else 0.95), 
+            order_type={"market": True}, 
+            reduce_only=order.reduce_only
+        )
+        
+        # HyperLiquid API returns the status and hash inside the 'response' dict
+        status_data = result.get('response', {}).get('data', {}).get('statuses', [{}])[0]
+        
+        if 'error' in status_data:
+             return {"status": "failed", "exchange_error": status_data['error']}
+
+        return {
+            "status": "success",
+            "message": f"Market order placed on {order.coin}.",
+            "side": "BUY" if order.is_buy else "SELL",
+            "size": order.size,
+            "tx_hash": result.get('response', {}).get('hash')
+        }
+
+    except Exception as e:
+        print(f"CRITICAL ERROR during market order placement: {e}", file=sys.stderr)
+        return {"error": f"Failed to place order: {str(e)}"}
+    
+# --- Cancel All Open Orders ---
+@mcp.tool()
+async def cancel_all_orders() -> Dict[str, Any]:
+    """
+    Cancels all open limit and trigger orders on the user's account across all assets.
+    This tool is used for risk management and requires authorization.
+    """
+    if not is_key_valid or not hl_exchange:
+        return {"error": "Trading is disabled. Private key is invalid or Exchange client failed to initialize."}
+    
+    try:
+        # The HyperLiquid SDK method for bulk cancellation
+        result = hl_exchange.cancel_all()
+
+        # HyperLiquid returns the transaction hash for the cancellation
+        tx_hash = result.get('response', {}).get('hash')
+        
+        if tx_hash:
+            return {
+                "status": "success",
+                "message": "All open orders successfully submitted for cancellation.",
+                "tx_hash": tx_hash
+            }
+        else:
+             # Handle cases where the API returns success but no hash (e.g., no orders to cancel)
+            return {
+                "status": "warning",
+                "message": "Cancellation request submitted, but no immediate transaction hash was returned (may mean no open orders found)."
+            }
+
+    except Exception as e:
+        print(f"CRITICAL ERROR during cancel_all: {e}", file=sys.stderr)
+        return {"error": f"Failed to execute cancel_all: {str(e)}"}
+    
 
 # --- 3. RUN THE SERVER ---
 if __name__ == "__main__":
