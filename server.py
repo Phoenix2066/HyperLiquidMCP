@@ -97,8 +97,11 @@ mcp = FastMCP(
     instructions="Provides read-only market data and authorized trading tools for HyperLiquid DEX."
 )
 
+<<<<<<< HEAD
 #--- READ-ONLY TOOLS (INFO CLIENT) ---
 
+=======
+>>>>>>> b750c0532025263937fd0f232ded0f161a993286
 #--- Get details from the users's provided wallet ---
 @mcp.tool()
 async def get_user_state() -> Dict[str, Any]:
@@ -166,6 +169,7 @@ async def get_order_book(coin: str) -> Dict[str, Any]:
         }
     except Exception as e:
         print(f"ERROR in fallback order book: {e}", file=sys.stderr)
+<<<<<<< HEAD
         return {"error": f"Failed to retrieve price data for {coin}: {str(e)}"}
 
 # --- Get User's Open Orders ---
@@ -232,6 +236,21 @@ async def get_all_perpetual_markets() -> Dict[str, Any]:
 #--- TRADING TOOLS (EXCHANGE CLIENT - REQUIRE VALID KEY) ---
 
 # --- Place a Market Order (Original) ---
+=======
+        return {"error": f"Failed to retrieve price data for {coin}: {str(e)}"}# Pydantic model for order input is optional here but highly recommended for clear tool schema
+from pydantic import BaseModel, Field
+from typing import Literal
+
+class MarketOrderInput(BaseModel):
+    """Defines input parameters for placing a market order."""
+    coin: str = Field(..., description="The asset symbol to trade (e.g., 'BTC', 'ETH').")
+    is_buy: bool = Field(..., description="True for a BUY order (go long/reduce short), False for a SELL order (go short/reduce long).")
+    size: float = Field(..., gt=0, description="The size of the order, must be greater than zero.")
+    reduce_only: bool = Field(False, description="Set to True to ensure the order only reduces an existing position.")
+
+
+# --- Place a Market Order ---
+>>>>>>> b750c0532025263937fd0f232ded0f161a993286
 @mcp.tool()
 async def place_market_order(order: MarketOrderInput) -> Dict[str, Any]:
     """
@@ -247,18 +266,31 @@ async def place_market_order(order: MarketOrderInput) -> Dict[str, Any]:
         if mid_price <= 0:
             return {"error": "Could not retrieve valid market price to use for the order."}
             
+<<<<<<< HEAD
         # For market orders, limit_px is set far from the mid price to guarantee a fill
         limit_px = mid_price * (1.05 if order.is_buy else 0.95)
             
+=======
+        # Place the order using the Exchange client
+>>>>>>> b750c0532025263937fd0f232ded0f161a993286
         result = hl_exchange.order(
             coin=order.coin.upper(),
             is_buy=order.is_buy,
             sz=order.size,
+<<<<<<< HEAD
             limit_px=limit_px, 
+=======
+            # For market orders, limit_px is set far from the mid price to guarantee a fill
+            limit_px=mid_price * (1.05 if order.is_buy else 0.95), 
+>>>>>>> b750c0532025263937fd0f232ded0f161a993286
             order_type={"market": True}, 
             reduce_only=order.reduce_only
         )
         
+<<<<<<< HEAD
+=======
+        # HyperLiquid API returns the status and hash inside the 'response' dict
+>>>>>>> b750c0532025263937fd0f232ded0f161a993286
         status_data = result.get('response', {}).get('data', {}).get('statuses', [{}])[0]
         
         if 'error' in status_data:
@@ -275,6 +307,7 @@ async def place_market_order(order: MarketOrderInput) -> Dict[str, Any]:
     except Exception as e:
         print(f"CRITICAL ERROR during market order placement: {e}", file=sys.stderr)
         return {"error": f"Failed to place order: {str(e)}"}
+<<<<<<< HEAD
 
 # --- Place a Limit Order (New) ---
 @mcp.tool()
@@ -317,6 +350,10 @@ async def place_limit_order(order: LimitOrderInput) -> Dict[str, Any]:
         return {"error": f"Failed to place limit order: {str(e)}"}
 
 # --- Cancel All Open Orders (Original) ---
+=======
+    
+# --- Cancel All Open Orders ---
+>>>>>>> b750c0532025263937fd0f232ded0f161a993286
 @mcp.tool()
 async def cancel_all_orders() -> Dict[str, Any]:
     """
@@ -327,8 +364,15 @@ async def cancel_all_orders() -> Dict[str, Any]:
         return {"error": "Trading is disabled. Private key is invalid or Exchange client failed to initialize."}
     
     try:
+<<<<<<< HEAD
         result = hl_exchange.cancel_all()
 
+=======
+        # The HyperLiquid SDK method for bulk cancellation
+        result = hl_exchange.cancel_all()
+
+        # HyperLiquid returns the transaction hash for the cancellation
+>>>>>>> b750c0532025263937fd0f232ded0f161a993286
         tx_hash = result.get('response', {}).get('hash')
         
         if tx_hash:
@@ -338,6 +382,10 @@ async def cancel_all_orders() -> Dict[str, Any]:
                 "tx_hash": tx_hash
             }
         else:
+<<<<<<< HEAD
+=======
+             # Handle cases where the API returns success but no hash (e.g., no orders to cancel)
+>>>>>>> b750c0532025263937fd0f232ded0f161a993286
             return {
                 "status": "warning",
                 "message": "Cancellation request submitted, but no immediate transaction hash was returned (may mean no open orders found)."
@@ -347,6 +395,7 @@ async def cancel_all_orders() -> Dict[str, Any]:
         print(f"CRITICAL ERROR during cancel_all: {e}", file=sys.stderr)
         return {"error": f"Failed to execute cancel_all: {str(e)}"}
     
+<<<<<<< HEAD
 # --- Cancel a Specific Order by ID (New) ---
 @mcp.tool()
 async def cancel_order_by_id(cancel_input: CancelOrderInput) -> Dict[str, Any]:
@@ -382,6 +431,10 @@ async def cancel_order_by_id(cancel_input: CancelOrderInput) -> Dict[str, Any]:
 
 
 # --- 4. RUN THE SERVER ---
+=======
+
+# --- 3. RUN THE SERVER ---
+>>>>>>> b750c0532025263937fd0f232ded0f161a993286
 if __name__ == "__main__":
     print(f"Starting HyperLiquid MCP Server for address: {user_address}. Waiting for client connection (STDIO)...", file=sys.stderr)
     mcp.run()
