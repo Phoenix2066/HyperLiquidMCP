@@ -108,6 +108,7 @@ async def get_user_state() -> Dict[str, Any]:
     # Use the logic from the first snippet (less strict error message for read-only)
     if not is_key_valid:
         print("WARNING: Private key is invalid or missing, proceeding with read-only state query.", file=sys.stderr)
+        return {'error':"Private key is invalid or missing"}
         
     # user_address is available even if key is invalid/missing
     state = hl_info.user_state(user_address)
