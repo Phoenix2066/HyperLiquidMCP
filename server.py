@@ -4,7 +4,7 @@ from typing import Dict, Any, Literal
 from eth_account import Account
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
-import json # Used in the original code, kept for completeness
+import json 
 
 # FastMCP imports
 from fastmcp import FastMCP
@@ -12,10 +12,15 @@ from fastmcp import FastMCP
 # HyperLiquid SDK imports
 from hyperliquid.info import Info
 from hyperliquid.exchange import Exchange
+from hyperliquid.utils import constants # Provides TESTNET_API_URL and MAINNET_API_URL
 
 # -------------------- 1. INITIALIZATION AND AUTHENTICATION --------------------
 
 load_dotenv()
+
+# --- FIX: DETERMINE THE API ENDPOINT (Defaults to TESTNET) ---
+hl_env = os.environ.get("HYPERLIQUID_ENV", "TESTNET").upper() 
+HL_API_URL = constants.TESTNET_API_URL if hl_env == "TESTNET" else constants.MAINNET_API_URL
 
 # Get the private key from your .env file
 private_key = os.environ.get("HYPERLIQUID_PRIVATE_KEY")
@@ -32,7 +37,7 @@ else:
         # Step 1: Use eth_account to validate and create the account object
         key_bytes = private_key.lower().replace('0x', '')
         hl_account = Account.from_key(key_bytes)
-        user_address = hl_account.address
+        user_address = hl_account.address # This is the address that holds the funds
         
     except ValueError as e:
         is_key_valid = False
@@ -42,14 +47,15 @@ else:
         print(f"An unexpected error occurred during key setup: {e}", file=sys.stderr)
 
 
-# Client Setup (Info client is always safe)
-hl_info = Info() 
+# Client Setup (Info client)
+# FIX APPLIED: Pass the determined API URL (Testnet or Mainnet)
+hl_info = Info(HL_API_URL) 
 
 # Client Setup (Exchange client - only initialize if key is valid)
 if is_key_valid:
     try:
-        # Pass the hl_account object
-        hl_exchange = Exchange(hl_account)
+        # FIX APPLIED: Pass the hl_account object AND the determined API URL
+        hl_exchange = Exchange(hl_account, HL_API_URL) 
     except TypeError as e:
         hl_exchange = None
         print(f"CRITICAL ERROR: Failed to initialize Exchange client: {e}", file=sys.stderr)
@@ -58,36 +64,34 @@ else:
     hl_exchange = None
 
 
-# -------------------- 2. PYDANTIC MODELS FOR TOOL INPUTS --------------------
+# -------------------- 2. PYDANTIC MODELS FOR TOOL INPUTS (Documentation only) --------------------
 
 class MarketOrderInput(BaseModel):
     """Defines input parameters for placing a market order."""
-    coin: str = Field(..., description="The asset symbol to trade (e.g., 'BTC', 'ETH').")
-    is_buy: bool = Field(..., description="True for a BUY order (go long/reduce short), False for a SELL order (go short/reduce long).")
-    size: float = Field(..., gt=0, description="The size of the order, must be greater than zero.")
-    reduce_only: bool = Field(False, description="Set to True to ensure the order only reduces an existing position.")
+    coin: str 
+    is_buy: bool 
+    size: float 
+    reduce_only: bool
 
 class LimitOrderInput(BaseModel):
     """Defines input parameters for placing a limit order."""
-    coin: str = Field(..., description="The asset symbol to trade (e.g., 'BTC', 'ETH').")
-    is_buy: bool = Field(..., description="True for a BUY order, False for a SELL order.")
-    size: float = Field(..., gt=0, description="The size of the order, must be greater than zero.")
-    limit_price: float = Field(..., gt=0, description="The specific price at which the order should be filled.")
-    time_in_force: Literal["Gtc", "Ioc", "Alo"] = Field("Gtc", description="Time-in-Force. Gtc: Good-Til-Canceled (default). Ioc: Immediate-Or-Cancel. Alo: Add-Liquidity-Only (Post-Only).")
-    reduce_only: bool = Field(False, description="Set to True to ensure the order only reduces an existing position.")
+    coin: str
+    is_buy: bool
+    size: float
+    limit_price: float
+    time_in_force: Literal["Gtc", "Ioc", "Alo"]
+    reduce_only: bool
 
 class CancelOrderInput(BaseModel):
     """Defines input parameters for canceling a specific order."""
-    coin: str = Field(..., description="The asset symbol (e.g., 'BTC', 'ETH') of the order to cancel.")
-    order_id: int = Field(..., gt=0, description="The unique numerical ID of the open order to cancel.")
+    coin: str 
+    order_id: int 
     
 class CandlestickInput(BaseModel):
     """Defines input parameters for retrieving candlestick data."""
-    coin: str = Field(..., description="The asset symbol (e.g., 'BTC', 'ETH').")
-    interval: Literal["1m", "5m", "15m", "30m", "1h", "4h", "1d"] = Field(
-        ..., description="The desired time interval per candlestick (e.g., '1h', '1d')."
-    )
-    limit: int = Field(100, gt=0, le=1000, description="The maximum number of recent candles to retrieve (1 to 1000).")
+    coin: str
+    interval: Literal["1m", "5m", "15m", "30m", "1h", "4h", "1d"]
+    limit: int
 
 
 # -------------------- 3. FASTMCP SERVER DEFINITION --------------------
@@ -103,14 +107,8 @@ mcp = FastMCP(
 async def get_user_state() -> Dict[str, Any]:
     """
     Retrieves the user's current account state (balances, margin, and positions) 
-    for the configured wallet address.
+    for the configured wallet address on the Hyperliquid trading layer.
     """
-    # Use the logic from the first snippet (less strict error message for read-only)
-    if not is_key_valid:
-        print("WARNING: Private key is invalid or missing, proceeding with read-only state query.", file=sys.stderr)
-        return {'error':"Private key is invalid or missing"}
-        
-    # user_address is available even if key is invalid/missing
     state = hl_info.user_state(user_address)
     return state
 
@@ -136,13 +134,12 @@ async def get_mid_price(coin: str) -> float:
         return float(price_str)
     except (ValueError, TypeError) as e:
         print(f"WARNING: Could not convert price '{price_str}' to float for {coin_symbol}. Error: {e}", file=sys.stderr)
-        return -2.0 # Indicates a conversion failure
+        return -2.0 
 
 @mcp.tool()
 async def get_order_book(coin: str) -> Dict[str, Any]:
     """
-    [WORKAROUND] Retrieves the current price from the all_mids endpoint 
-    as a simplified order book representation. Use this if the full L2 method fails.
+    Retrieves the current price from the all_mids endpoint as a simplified order book representation.
     Args: coin (str): The asset symbol (e.g., 'BTC', 'ETH').
     """
     try:
@@ -159,8 +156,8 @@ async def get_order_book(coin: str) -> Dict[str, Any]:
         return {
             "coin": coin_symbol,
             "mid_price": price,
-            "bids": [{"price": price * 0.9999, "size": 1.0}], # Fake bid slightly below price
-            "asks": [{"price": price * 1.0001, "size": 1.0}], # Fake ask slightly above price
+            "bids": [{"price": price * 0.9999, "size": 1.0}], 
+            "asks": [{"price": price * 1.0001, "size": 1.0}], 
             "note": "⚠️ Data is simplified. Full L2 depth is unavailable in this SDK version or client.",
         }
     except Exception as e:
@@ -171,7 +168,6 @@ async def get_order_book(coin: str) -> Dict[str, Any]:
 async def get_open_orders() -> Dict[str, Any]:
     """
     Retrieves all currently open limit and trigger orders for the configured wallet address.
-    (Tool only available in the first snippet)
     """
     try:
         orders = hl_info.open_orders(user_address)
@@ -205,8 +201,6 @@ async def get_open_orders() -> Dict[str, Any]:
 async def get_all_perpetual_markets() -> Dict[str, Any]:
     """
     Retrieves a list of all perpetual contracts available for trading on HyperLiquid.
-    This is useful for market discovery and input validation for other tools.
-    (Tool only available in the first snippet)
     """
     try:
         metadata = hl_info.meta()
@@ -231,7 +225,13 @@ async def get_all_perpetual_markets() -> Dict[str, Any]:
 # -------------------- TRADING TOOLS (EXCHANGE CLIENT) --------------------
 
 @mcp.tool()
-async def place_market_order(order: MarketOrderInput) -> Dict[str, Any]:
+# FIX APPLIED: RENAMED to execute_market_order to bust the tool cache
+async def execute_market_order(
+    coin: str = Field(..., description="The asset symbol to trade (e.g., 'BTC', 'ETH')."),
+    is_buy: bool = Field(..., description="True for a BUY order (go long/reduce short), False for a SELL order (go short/reduce long)."),
+    size: float = Field(..., gt=0, description="The size of the order, must be greater than zero."),
+    reduce_only: bool = Field(False, description="Set to True to ensure the order only reduces an existing position.")
+) -> Dict[str, Any]:
     """
     Executes an immediate market order to buy or sell a specified size of an asset.
     This tool requires a valid private key for transaction signing.
@@ -241,20 +241,20 @@ async def place_market_order(order: MarketOrderInput) -> Dict[str, Any]:
 
     try:
         # Get the market price for the order type
-        mid_price = await get_mid_price(order.coin)
+        mid_price = await get_mid_price(coin)
         if mid_price <= 0:
             return {"error": "Could not retrieve valid market price to use for the order."}
             
         # For market orders, limit_px is set far from the mid price to guarantee a fill
-        limit_px = mid_price * (1.05 if order.is_buy else 0.95)
+        limit_px = mid_price * (1.05 if is_buy else 0.95)
             
         result = hl_exchange.order(
-            coin=order.coin.upper(),
-            is_buy=order.is_buy,
-            sz=order.size,
+            coin=coin.upper(),
+            is_buy=is_buy,
+            sz=size,
             limit_px=limit_px, 
             order_type={"market": True}, 
-            reduce_only=order.reduce_only
+            reduce_only=reduce_only
         )
         
         status_data = result.get('response', {}).get('data', {}).get('statuses', [{}])[0]
@@ -264,9 +264,9 @@ async def place_market_order(order: MarketOrderInput) -> Dict[str, Any]:
 
         return {
             "status": "success",
-            "message": f"Market order placed on {order.coin}.",
-            "side": "BUY" if order.is_buy else "SELL",
-            "size": order.size,
+            "message": f"Market order placed on {coin}.",
+            "side": "BUY" if is_buy else "SELL",
+            "size": size,
             "tx_hash": result.get('response', {}).get('hash')
         }
 
@@ -275,24 +275,30 @@ async def place_market_order(order: MarketOrderInput) -> Dict[str, Any]:
         return {"error": f"Failed to place order: {str(e)}"}
 
 @mcp.tool()
-async def place_limit_order(order: LimitOrderInput) -> Dict[str, Any]:
+# FIX APPLIED: Using scalar arguments to resolve the "not callable" error
+async def place_limit_order(
+    coin: str = Field(..., description="The asset symbol to trade (e.g., 'BTC', 'ETH')."),
+    is_buy: bool = Field(..., description="True for a BUY order, False for a SELL order."),
+    size: float = Field(..., gt=0, description="The size of the order, must be greater than zero."),
+    limit_price: float = Field(..., gt=0, description="The specific price at which the order should be filled."),
+    time_in_force: Literal["Gtc", "Ioc", "Alo"] = Field("Gtc", description="Time-in-Force. Gtc: Good-Til-Canceled (default). Ioc: Immediate-Or-Cancel. Alo: Add-Liquidity-Only (Post-Only)."),
+    reduce_only: bool = Field(False, description="Set to True to ensure the order only reduces an existing position.")
+) -> Dict[str, Any]:
     """
     Places a limit order to buy or sell a specified size at a specific price.
     This tool requires a valid private key for transaction signing.
-    (Tool only available in the first snippet)
     """
     if not is_key_valid or not hl_exchange:
         return {"error": "Trading is disabled. Private key is invalid or Exchange client failed to initialize."}
 
     try:
-        # Place the order using the Exchange client
         result = hl_exchange.order(
-            coin=order.coin.upper(),
-            is_buy=order.is_buy,
-            sz=order.size,
-            limit_px=order.limit_price,
-            order_type={"limit": {"tif": order.time_in_force}}, 
-            reduce_only=order.reduce_only
+            coin=coin.upper(),
+            is_buy=is_buy,
+            sz=size,
+            limit_px=limit_price,
+            order_type={"limit": {"tif": time_in_force}}, 
+            reduce_only=reduce_only
         )
         
         status_data = result.get('response', {}).get('data', {}).get('statuses', [{}])[0]
@@ -304,8 +310,8 @@ async def place_limit_order(order: LimitOrderInput) -> Dict[str, Any]:
         
         return {
             "status": "success",
-            "message": f"Limit order placed for {order.size} {order.coin} at {order.limit_price} with TIF: {order.time_in_force}.",
-            "side": "BUY" if order.is_buy else "SELL",
+            "message": f"Limit order placed for {size} {coin} at {limit_price} with TIF: {time_in_force}.",
+            "side": "BUY" if is_buy else "SELL",
             "order_id": order_id,
             "tx_hash": result.get('response', {}).get('hash')
         }
@@ -345,19 +351,22 @@ async def cancel_all_orders() -> Dict[str, Any]:
         return {"error": f"Failed to execute cancel_all: {str(e)}"}
     
 @mcp.tool()
-async def cancel_order_by_id(cancel_input: CancelOrderInput) -> Dict[str, Any]:
+# FIX APPLIED: Using scalar arguments to resolve the "not callable" error
+async def cancel_order_by_id(
+    coin: str = Field(..., description="The asset symbol (e.g., 'BTC', 'ETH') of the order to cancel."),
+    order_id: int = Field(..., gt=0, description="The unique numerical ID of the open order to cancel.")
+) -> Dict[str, Any]:
     """
     Cancels a single, specific open order using its unique Order ID (oid).
     This tool requires a valid private key for transaction signing.
-    (Tool only available in the first snippet)
     """
     if not is_key_valid or not hl_exchange:
         return {"error": "Trading is disabled. Private key is invalid or Exchange client failed to initialize."}
         
     try:
         result = hl_exchange.cancel(
-            coin=cancel_input.coin.upper(),
-            oid=cancel_input.order_id
+            coin=coin.upper(),
+            oid=order_id
         )
 
         tx_hash = result.get('response', {}).get('hash')
@@ -368,17 +377,17 @@ async def cancel_order_by_id(cancel_input: CancelOrderInput) -> Dict[str, Any]:
         
         return {
             "status": "success",
-            "message": f"Cancellation request submitted for Order ID {cancel_input.order_id} on {cancel_input.coin}.",
-            "order_id": cancel_input.order_id,
+            "message": f"Cancellation request submitted for Order ID {order_id} on {coin}.",
+            "order_id": order_id,
             "tx_hash": tx_hash
         }
 
     except Exception as e:
         print(f"CRITICAL ERROR during cancel_order_by_id: {e}", file=sys.stderr)
-        return {"error": f"Failed to cancel order {cancel_input.order_id}: {str(e)}"}
+        return {"error": f"Failed to cancel order {order_id}: {str(e)}"}
 
 
 # -------------------- 4. RUN THE SERVER --------------------
 if __name__ == "__main__":
-    print(f"Starting HyperLiquid MCP Server for address: {user_address}. Waiting for client connection (STDIO)...", file=sys.stderr)
+    print(f"Starting HyperLiquid MCP Server for address: {user_address} on {hl_env} environment. Waiting for client connection (STDIO)...", file=sys.stderr)
     mcp.run()
